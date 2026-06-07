@@ -1,0 +1,37 @@
+Gaussian 1D B-spline evaluation
+
+Runtime (seconds): 82.773506
+Optimizer success: True
+Optimizer status: 1
+Optimizer message: `gtol` termination condition is satisfied.
+Iterations recorded: 1
+Number of in-domain Monte Carlo samples: 10000
+Spline domain: (-5.0, 5.0)
+Sample interval: [-3.661082, 4.061606]
+Spline degree: 3
+Number of basis functions: 14
+Final empirical objective: 0.4939141022
+L2 error on sample interval: 5.3180438052e-02
+Linf error on sample interval: 3.5510016293e-01
+Linf derivative error on sample interval: 3.3784111234e+00
+
+Optimized B-spline coefficients:
+[-22.34659528, -21.37664972,  -3.46285197,  -3.28570931,  -2.26963867,
+  -1.35002239,  -0.45448027,   0.47733597,   1.38451291,   2.27535237,
+   3.29395148,   3.64645882,   5.34273938,  18.57938452]
+
+Reference identity coefficients (Greville abscissae):
+[-5.        , -4.6969697 , -4.09090909, -3.18181818, -2.27272727,
+ -1.36363636, -0.45454545,  0.45454545,  1.36363636,  2.27272727,
+  3.18181818,  4.09090909,  4.6969697 ,  5.        ]
+
+Solution values at sample points:
+  x=-2.00 -> T(x)=-1.99937610, T'(x)= 1.03638069
+  x=-1.00 -> T(x)=-0.99228529, T'(x)= 0.99305514
+  x= 0.00 -> T(x)= 0.01167024, T'(x)= 1.01662227
+  x= 1.00 -> T(x)= 1.02079117, T'(x)= 0.99682807
+  x= 2.00 -> T(x)= 2.01533061, T'(x)= 1.01516334
+
+Convergence plot: gaussian_1d_convergence.png
+Solution plot: gaussian_1d_solution.png
+Distribution plot: gaussian_1d_transformed_distribution.png

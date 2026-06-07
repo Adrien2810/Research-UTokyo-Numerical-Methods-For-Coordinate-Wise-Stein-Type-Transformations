@@ -389,22 +389,63 @@ class BSplineApproach:
             blocks.append(self._difference_matrix(n_basis_j))
 
         A = block_diag(*blocks)
-        lb = np.zeros(A.shape[0])
+        # To exlude the constant sequence when initiliazing
+        lb = 1e-4 * np.ones(A.shape[0])
         ub = np.full(A.shape[0], np.inf)
 
         return LinearConstraint(A, lb=lb, ub=ub)
     
-    # We now have the objective function and the linear constraint. We can now minimize over the coefs simultaneously!
-    def optimize(self, initial_guess, number_transforms):
-        constraint = self.build_monotonicity_constraint(number_transforms)
+    # After we implemented the OVF and the constraint, we want a callback function for analyzing the results
+    def callback(self, number_transforms):
+        # initialize the history of the optimization procedure
+        history = {
+            "iteration": [],
+            "objective": [],
+            "monotonicity_satisfied": [],
+            "min_derivatives": [],
+        }
+        # Define the callback function that will be called at each iteration of the optimization procedure. This function will check the monotonicity condition and record the objective value and the minimum derivative for each transform.
+        def callback_fn(xk): #xk is the current flat coefficient vector
+            history["iteration"].append(np.copy(xk))
+            objective_value = self.MonteCarloObjective(xk, number_transforms)
+            history["objective"].append(objective_value)
 
+            # Check monotonicity and record the minimum derivative for each transform
+            coeff_blocks = self._split_coefficients(xk, number_transforms)
+            active_mask = self._active_sample_mask(number_transforms)
+            points = np.asarray(self.samples.points, dtype=float)[active_mask, :number_transforms]
+            # Go through each transform and compute min derivative and check monotonicity
+            min_dev = np.zeros(number_transforms)
+            for j in range(number_transforms):
+                coefficients_j = coeff_blocks[j]
+                transformed_derivatives = self.transform_derivative(
+                    points[:, j],
+                    coefficients_j,
+                    transform_index=j,
+                )
+                min_dev[j] = np.min(transformed_derivatives)
+
+            history["min_derivatives"].append(min_dev)
+            history["monotonicity_satisfied"].append(np.all(min_dev > 0))
+        return callback_fn, history
+        
+    # We now have the objective function and the linear constraint. We can now minimize over the coefs simultaneously!
+    def optimize(self, initial_guess, number_transforms, maxiter=250):
+        constraint = self.build_monotonicity_constraint(number_transforms)
+        # include callback function for monitoring the optimization procedure
+        callback_fn, history = self.callback(number_transforms)
+        # SLSQP stands for Sequential Least Squares Programming. Very roughly, it solves your constrained nonlinear problem by repeatedly replacing it with a local quadratic approximation and then solving that simpler subproblem.
         result = minimize(
             fun=self.MonteCarloObjective,
             x0=np.asarray(initial_guess, dtype=float),
             args=(number_transforms,),
-            method="trust-constr",
+            method="SLSQP",
             constraints=[constraint],
+            callback=callback_fn,
+            options={"maxiter": maxiter},
         )
+
+        result.history = history 
         return result
 
     # From the optimize function we get a concatenated vector of the optimal coefficients. From this 
