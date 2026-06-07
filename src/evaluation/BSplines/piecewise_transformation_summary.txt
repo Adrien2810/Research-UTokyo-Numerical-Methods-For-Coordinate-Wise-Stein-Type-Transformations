@@ -1,0 +1,53 @@
+Piecewise-transformation B-spline evaluation
+
+Exact transformations:
+  Ti(x) = -ci + Phi^{-1}((1 + x) Phi(ci)) for x < 0
+  Ti(x) =  ci - Phi^{-1}((1 - x) Phi(ci)) for x >= 0
+
+Constants: c1=1.2490, c2=0.3445, c3=0.3445
+Runtime (seconds): 21.717695
+Optimizer backend: cvxpy
+Optimizer success: True
+Optimizer status: optimal
+Optimizer message: CVXPY status: optimal
+Minimum derivative lower bound: 1.00e-05
+Objective evaluations recorded: 1
+Accepted iterates recorded: 1
+Number of in-domain Monte Carlo samples: 18847
+Domain x1: (-0.98, 0.98)
+Domain x2: (-0.98, 0.98)
+Domain x3: (-0.98, 0.98)
+Final empirical objective: -1.4609677442
+Max L2 error on sample intervals: 1.1414596157e-01
+Max Linf error on sample intervals: 7.0025382436e-01
+Max Linf derivative error: 1.2933232914e+01
+
+Stationary-condition checks:
+  x: residuals=[-6.724743e-07, -2.202713e-07, -1.571381e-07], passed=True
+  x^2: residuals=[-0.000684,  0.001698, -0.000198], passed=False
+  x^3: residuals=[-0.088889, -0.070621, -0.078805], passed=False
+
+Solution values at sample points for T1:
+  x=-0.7840 -> T1(x)=-2.20470188, exact=-2.11538267, T1'(x)= 3.68038425
+  x=-0.3920 -> T1(x)=-1.18163894, exact=-1.13935682, T1'(x)= 2.29603225
+  x= 0.0000 -> T1(x)=-0.00555273, exact= 0.00000000, T1'(x)= 4.53040864
+  x= 0.3920 -> T1(x)= 1.15824022, exact= 1.13935682, T1'(x)= 2.29667382
+  x= 0.7840 -> T1(x)= 2.17941604, exact= 2.11538267, T1'(x)= 3.70190873
+
+Solution values at sample points for T2:
+  x=-0.7840 -> T2(x)=-1.48638875, exact=-1.43789954, T2'(x)= 3.31333675
+  x=-0.3920 -> T2(x)=-0.66785271, exact=-0.63442442, T2'(x)= 1.74964612
+  x= 0.0000 -> T2(x)=-0.00270001, exact=-0.00000000, T2'(x)= 1.71616702
+  x= 0.3920 -> T2(x)= 0.65668543, exact= 0.63442442, T2'(x)= 1.84552059
+  x= 0.7840 -> T2(x)= 1.51945587, exact= 1.43789954, T2'(x)= 3.23660872
+
+Solution values at sample points for T3:
+  x=-0.7840 -> T3(x)=-1.47941108, exact=-1.43789954, T3'(x)= 3.34796738
+  x=-0.3920 -> T3(x)=-0.63696475, exact=-0.63442442, T3'(x)= 1.71865241
+  x= 0.0000 -> T3(x)= 0.01047607, exact=-0.00000000, T3'(x)= 1.71956066
+  x= 0.3920 -> T3(x)= 0.65386642, exact= 0.63442442, T3'(x)= 1.73032323
+  x= 0.7840 -> T3(x)= 1.49516661, exact= 1.43789954, T3'(x)= 3.17934001
+
+Convergence plot: piecewise_transformation_convergence.png
+Solution plot: piecewise_transformation_solution.png
+Distribution plot: piecewise_transformation_distribution.png
