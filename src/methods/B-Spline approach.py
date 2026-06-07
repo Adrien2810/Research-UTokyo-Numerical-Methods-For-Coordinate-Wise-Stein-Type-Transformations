@@ -2,12 +2,17 @@ import numpy as np
 from scipy.optimize import LinearConstraint
 from scipy.linalg import block_diag
 from scipy.interpolate import BSpline
-from scipy.optimize import minimize
+from scipy.optimize import minimize, OptimizeResult
 
 
 # Packages you may want later, depending on your implementation:
 # from scipy.stats import norm
 from dataclasses import dataclass
+
+try:
+    import cvxpy as cp
+except ImportError:
+    cp = None
 
 ArrayLike = np.ndarray
 
@@ -333,8 +338,6 @@ class BSplineApproach:
         transformed_points = np.zeros_like(active_samples, dtype=float)
         transformed_derivatives = np.zeros_like(active_samples, dtype=float)
 
-        tolerance = 1e-6
-
         for j in range(number_transforms):
             coefficients_j = coeff_blocks[j]
 
@@ -349,12 +352,13 @@ class BSplineApproach:
                 transform_index=j,
             )
 
-            min_derivative_j = np.min(transformed_derivatives[:, j])
-            if min_derivative_j <= tolerance:
-                return 1e12 #if a derivative is too small we give a very large penalty to the optimizer
-                # Thhis enables us to continue the procedure even if the monotonicity constraint is not satisfied, which can be useful in the early stages of optimization when the coefficients are still far from optimal and the monotonicity condition is likely to be violated.
+        # We no longer return a hard penalty when T_i' is too small.
+        # Instead, optimize(...) adds an explicit linear derivative constraint.
+        # The clip here is only a numerical guard in case SLSQP probes a
+        # slightly infeasible point while approximating derivatives.
+        safe_derivatives = np.clip(transformed_derivatives, 1e-12, None)
 
-        first_term = -np.sum(np.mean(np.log(transformed_derivatives), axis=0))
+        first_term = -np.sum(np.mean(np.log(safe_derivatives), axis=0))
         second_term = 0.5 * np.mean(np.sum(transformed_points, axis=1) ** 2)
 
         return first_term + second_term
@@ -375,6 +379,36 @@ class BSplineApproach:
             D[j, j] = -1.0
             D[j, j + 1] = 1.0
         return D  
+
+    def build_derivative_constraint(self, number_transforms, minimum_derivative=1e-6):
+        """
+        Build a linear constraint enforcing T_i'(x) >= minimum_derivative
+        at the active Monte Carlo sample locations.
+
+        This replaces the old hard penalty in the objective. Since T_i'(x) is
+        linear in the spline coefficients, these are still linear constraints.
+        """
+        self._validate_active_samples(number_transforms)
+
+        active_mask = self._active_sample_mask(number_transforms)
+        active_samples = np.asarray(self.samples.points, dtype=float)[
+            active_mask, :number_transforms
+        ]
+
+        blocks = []
+        for j in range(number_transforms):
+            derivative_matrix_j = self.spline_matrix(
+                active_samples[:, j],
+                derivative=True,
+                transform_index=j,
+            )
+            blocks.append(derivative_matrix_j)
+
+        A = block_diag(*blocks)
+        lb = minimum_derivative * np.ones(A.shape[0])
+        ub = np.full(A.shape[0], np.inf)
+
+        return LinearConstraint(A, lb=lb, ub=ub)
     
     # Now we define the monotonicty constraints. For this we multiply the difference matrix with the coefficient vector and check that all entries are positive. This ensures that c_i - c_(i-1) > 0 for all i, which in turn ensures that the derivative of the transform is positive.
     def build_monotonicity_constraint(self, number_transforms):
@@ -430,8 +464,20 @@ class BSplineApproach:
         return callback_fn, history
         
     # We now have the objective function and the linear constraint. We can now minimize over the coefs simultaneously!
-    def optimize(self, initial_guess, number_transforms, maxiter=250):
-        constraint = self.build_monotonicity_constraint(number_transforms)
+    def optimize(
+        self,
+        initial_guess,
+        number_transforms,
+        maxiter=250,
+        minimum_derivative=1e-6,
+    ):
+        monotonicity_constraint = self.build_monotonicity_constraint(number_transforms)
+        # This is the new explicit lower bound T_i'(x) >= minimum_derivative
+        # at the active Monte Carlo sample points.
+        derivative_constraint = self.build_derivative_constraint(
+            number_transforms,
+            minimum_derivative=minimum_derivative,
+        )
         # include callback function for monitoring the optimization procedure
         callback_fn, history = self.callback(number_transforms)
         # SLSQP stands for Sequential Least Squares Programming. Very roughly, it solves your constrained nonlinear problem by repeatedly replacing it with a local quadratic approximation and then solving that simpler subproblem.
@@ -440,13 +486,166 @@ class BSplineApproach:
             x0=np.asarray(initial_guess, dtype=float),
             args=(number_transforms,),
             method="SLSQP",
-            constraints=[constraint],
+            constraints=[monotonicity_constraint, derivative_constraint],
             callback=callback_fn,
             options={"maxiter": maxiter},
         )
 
         result.history = history 
         return result
+
+    def optimize_cvxpy(
+        self,
+        initial_guess,
+        number_transforms,
+        minimum_derivative=1e-6,
+        solver=None,
+        verbose=False,
+        **solver_kwargs,
+    ):
+        """
+        Solve the same Monte Carlo B-spline problem with CVXPY instead of
+        scipy.optimize.minimize.
+
+        The formulation matches the paper more directly:
+        - T_i(x) and T_i'(x) are affine in the spline coefficients,
+        - -log(T_i'(x)) is handled natively by CVXPY,
+        - the quadratic coupling term is written as sum_squares,
+        - monotonicity and derivative lower bounds are imposed as constraints.
+        """
+        if cp is None:
+            raise ImportError(
+                "CVXPY is not installed. Install `cvxpy` before calling "
+                "`optimize_cvxpy`."
+            )
+
+        self._validate_active_samples(number_transforms)
+
+        active_mask = self._active_sample_mask(number_transforms)
+        active_samples = np.asarray(self.samples.points, dtype=float)[
+            active_mask, :number_transforms
+        ]
+        n_active_samples = active_samples.shape[0]
+
+        coefficient_variables = []
+        transformed_points = []
+        transformed_derivatives = []
+        constraints = []
+        initial_blocks = self._split_coefficients(initial_guess, number_transforms)
+
+        for j in range(number_transforms):
+            n_basis_j = self._get_config(j).n_basis
+            basis_matrix_j = self.spline_matrix(
+                active_samples[:, j],
+                derivative=False,
+                transform_index=j,
+            )
+            derivative_matrix_j = self.spline_matrix(
+                active_samples[:, j],
+                derivative=True,
+                transform_index=j,
+            )
+            difference_matrix_j = self._difference_matrix(n_basis_j)
+
+            coefficients_j = cp.Variable(n_basis_j)
+            # Warm-start CVXPY with the same initial coefficients used by SLSQP.
+            coefficients_j.value = np.asarray(initial_blocks[j], dtype=float)
+
+            transform_j = basis_matrix_j @ coefficients_j
+            transform_derivative_j = derivative_matrix_j @ coefficients_j
+
+            coefficient_variables.append(coefficients_j)
+            transformed_points.append(transform_j)
+            transformed_derivatives.append(transform_derivative_j)
+
+            # Keep the same coefficient-difference monotonicity condition used
+            # in the SciPy formulation for a like-for-like comparison.
+            constraints.append(difference_matrix_j @ coefficients_j >= 1e-4)
+
+            # This is the explicit replacement for the old hard penalty:
+            # enforce T_i'(x) >= minimum_derivative directly in the model.
+            constraints.append(transform_derivative_j >= minimum_derivative)
+
+        total_transform = transformed_points[0]
+        for transform_j in transformed_points[1:]:
+            total_transform = total_transform + transform_j
+
+        objective = 0
+        for derivative_j in transformed_derivatives:
+            # This is the CVXPY version of the Monte Carlo entropy term
+            # - (1/m) * sum_l log(T_i'(x_i^l)).
+            objective += -cp.sum(cp.log(derivative_j)) / n_active_samples
+
+        # This is the CVXPY version of the coupling term
+        # (1/(2m)) * sum_l (T_1(x_1^l) + ... + T_n(x_n^l))^2.
+        objective += 0.5 * cp.sum_squares(total_transform) / n_active_samples
+
+        problem = cp.Problem(cp.Minimize(objective), constraints)
+
+        if solver is None:
+            # SCS is a safe default because it supports exponential-cone
+            # structure coming from the log term in the objective.
+            solver = cp.SCS
+
+        problem.solve(solver=solver, verbose=verbose, warm_start=True, **solver_kwargs)
+
+        solution_blocks = []
+        for variable in coefficient_variables:
+            if variable.value is None:
+                raise ValueError(
+                    "CVXPY did not return coefficient values. "
+                    f"Problem status: {problem.status}"
+                )
+            solution_blocks.append(np.asarray(variable.value, dtype=float).ravel())
+
+        solution = np.concatenate(solution_blocks)
+        result = OptimizeResult(
+            x=solution,
+            fun=float(problem.value) if problem.value is not None else np.nan,
+            success=problem.status in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE),
+            status=problem.status,
+            message=f"CVXPY status: {problem.status}",
+        )
+        result.history = None
+        result.solver_stats = problem.solver_stats
+        result.problem_value = problem.value
+
+        return result
+
+    def optimize_with_backend(
+        self,
+        initial_guess,
+        number_transforms,
+        backend="scipy",
+        **kwargs,
+    ):
+        """
+        Small convenience wrapper so evaluation scripts can switch solvers with
+        one flag instead of rewriting the optimization call.
+        """
+        backend = str(backend).lower()
+        backend_kwargs = dict(kwargs)
+
+        if backend == "scipy":
+            return self.optimize(
+                initial_guess=initial_guess,
+                number_transforms=number_transforms,
+                **backend_kwargs,
+            )
+
+        if backend == "cvxpy":
+            # The SciPy backend uses `maxiter`, but the CVXPY backend does not.
+            # Drop it here so evaluation scripts can keep one shared call site.
+            backend_kwargs.pop("maxiter", None)
+            return self.optimize_cvxpy(
+                initial_guess=initial_guess,
+                number_transforms=number_transforms,
+                **backend_kwargs,
+            )
+
+        raise ValueError(
+            "Unknown backend. Use `backend='scipy'` or `backend='cvxpy'`."
+        )
 
     # From the optimize function we get a concatenated vector of the optimal coefficients. From this 
     # we can construct our coordinate wise transforms in the B-Spline representation.

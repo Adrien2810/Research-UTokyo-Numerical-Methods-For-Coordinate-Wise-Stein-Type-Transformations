@@ -50,23 +50,27 @@ class RunConfig1D:
     num_samples: int = 10000
     random_state: int = 7
     number_transforms: int = 1
+    optimizer_backend: str = "cvxpy"
     degree: int = 3
     domain: tuple[float, float] = (-5.0, 5.0)
     num_internal_knots: int = 10
     maxiter: int = 250
+    minimum_derivative: float = 1e-5
     grid_size: int = 400
     histogram_bins: int = 45
 
 @dataclass
 class RunConfig2D:
-    num_samples: int = 10000
+    num_samples: int = 30000
     random_state: int = 7
     number_transforms: int = 2
+    optimizer_backend: str = "cvxpy"
     degree: int = 3
     domain_1: tuple[float, float] = (-5.0, 5.0)
     domain_2: tuple[float, float] = (-5.0, 5.0)
     num_internal_knots: int = 10
     maxiter: int = 250
+    minimum_derivative: float = 1e-5
     grid_size: int = 300
     histogram_bins: int = 45
     covariance: np.ndarray = field(
@@ -162,10 +166,12 @@ def run_1d(config: RunConfig1D):
     exact_coefficients =  knot_average(knots, config.degree)
 
     start_time = perf_counter()
-    result = bspline_approach.optimize(
+    result = bspline_approach.optimize_with_backend(
         initial_guess=initial_coefficients,
         number_transforms=config.number_transforms,
+        backend=config.optimizer_backend,
         maxiter=config.maxiter,
+        minimum_derivative=config.minimum_derivative,
     )
     runtime_seconds = perf_counter() - start_time
 
@@ -246,7 +252,7 @@ def run_1d(config: RunConfig1D):
     # Now plot -> Codex did this
     fig, axes = plt.subplots(2, 2, figsize=(11, 8.5), sharex="col")
     iterations = np.arange(1, len(objective_history) + 1)
-    
+
     axes[0, 0].plot(
         iterations,
         objective_history,
@@ -435,9 +441,11 @@ def run_1d(config: RunConfig1D):
         "Gaussian 1D B-spline evaluation",
         "",
         f"Runtime (seconds): {runtime_seconds:.6f}",
+        f"Optimizer backend: {config.optimizer_backend}",
         f"Optimizer success: {result.success}",
         f"Optimizer status: {result.status}",
         f"Optimizer message: {result.message}",
+        f"Minimum derivative lower bound: {config.minimum_derivative:.2e}",
         f"Iterations recorded: {len(objective_history)}",
         f"Number of in-domain Monte Carlo samples: {sample_values.size}",
         f"Spline domain: {config.domain}",
@@ -552,10 +560,12 @@ def run_2d(config: RunConfig2D):
     exact_coefficients = np.concatenate([exact_coefficients_1, exact_coefficients_2])
 
     start_time = perf_counter()
-    result = bspline_approach.optimize(
+    result = bspline_approach.optimize_with_backend(
         initial_guess=initial_guess,
         number_transforms=config.number_transforms,
+        backend=config.optimizer_backend,
         maxiter=config.maxiter,
+        minimum_derivative=config.minimum_derivative,
     )
     runtime_seconds = perf_counter() - start_time
 
@@ -805,9 +815,11 @@ def run_2d(config: RunConfig2D):
         "Gaussian 2D B-spline evaluation",
         "",
         f"Runtime (seconds): {runtime_seconds:.6f}",
+        f"Optimizer backend: {config.optimizer_backend}",
         f"Optimizer success: {result.success}",
         f"Optimizer status: {result.status}",
         f"Optimizer message: {result.message}",
+        f"Minimum derivative lower bound: {config.minimum_derivative:.2e}",
         f"Objective evaluations recorded: {len(objective_history)}",
         f"Accepted iterates recorded: {len(coefficient_history)}",
         f"Number of in-domain Monte Carlo samples: {filtered_points.shape[0]}",
