@@ -1,0 +1,63 @@
+Independent exponential B-spline evaluation
+
+Potential: absolute_sum
+Exact coordinate map: G^{-1}(F_i)
+
+Runtime (seconds): 905.652164
+Optimizer backend: cvxpy
+Optimizer success: True
+Optimizer status: optimal
+Optimizer message: CVXPY status: optimal
+Minimum derivative lower bound: 1.00e-05
+Objective evaluations recorded: 1
+Accepted iterates recorded: 1
+Number of in-domain Monte Carlo samples: 14884
+Domain x1: (0.0, 3.5)
+Domain x2: (0.0, 10.0)
+Sample interval x1: [0.000033, 3.485266]
+Sample interval x2: [0.000177, 9.974936]
+Spline degree: 3
+Number of basis functions T1: 20
+Number of basis functions T2: 24
+Final empirical objective: 0.0202822822
+L2 error T1 on sample interval: 8.5617624348e-01
+L2 error T2 on sample interval: 6.7702518182e-01
+Linf error T1 on sample interval: 5.8698469199e+00
+Linf error T2 on sample interval: 4.7037557090e+00
+Linf derivative error T1: 3.0198341506e+04
+Linf derivative error T2: 5.6205066638e+03
+
+Optimized B-spline coefficients:
+[-3.75504052, -1.10083731, -0.40360245,  0.55863723,  1.13234972,
+  1.66052273,  2.13176777,  2.59461571,  3.06374614,  3.51085774,
+  3.98877746,  4.36383735,  4.90781132,  5.25306776,  5.68563816,
+  6.48626044,  6.84260024,  8.7600308 ,  8.90094391, 11.93806865,
+ -4.7027179 , -2.11361503, -1.44812846, -0.62445641, -0.136036  ,
+  0.24541718,  0.59908913,  0.92953699,  1.22506773,  1.53722942,
+  1.82991306,  2.10571514,  2.40030115,  2.68652273,  2.96580638,
+  3.21906522,  3.58740229,  3.85761789,  4.32433789,  4.83630327,
+  5.26742651,  6.14713685,  6.37029076, 10.26909493]
+
+Stationary-condition checks:
+  x: residuals=[-8.677604e-05,  8.402323e-05], passed=True
+  x^2: residuals=[0.108527, 0.062445], passed=False
+  x^3: residuals=[-0.826283, -0.665664], passed=False
+  exp(x): residuals=[-1.17884 , -0.785005], passed=False
+
+Solution values at sample points for T1:
+  x1= 0.3500 -> T1(x1)= 0.24737827, exact= 0.01365900, T1'(x1)= 4.22966356
+  x1= 1.0500 -> T1(x1)= 2.17703337, exact= 1.96937133, T1'(x1)= 2.26478945
+  x1= 1.7500 -> T1(x1)= 3.74831652, exact= 3.46933728, T1'(x1)= 2.24016883
+  x1= 2.4500 -> T1(x1)= 5.22911764, exact= 4.89252555, T1'(x1)= 1.85354488
+  x1= 3.1500 -> T1(x1)= 7.49939449, exact= 6.29816201, T1'(x1)= 7.08263998
+
+Solution values at sample points for T2:
+  x2= 1.0000 -> T2(x2)=-0.61636527, exact=-0.43275213, T2'(x2)= 1.30969123
+  x2= 3.0000 -> T2(x2)= 1.01627496, exact= 1.24751754, T2'(x2)= 0.64015103
+  x2= 5.0000 -> T2(x2)= 2.25322522, exact= 2.41434952, T2'(x2)= 0.61150418
+  x2= 7.0000 -> T2(x2)= 3.47180975, exact= 3.46933728, T2'(x2)= 0.71214946
+  x2= 9.0000 -> T2(x2)= 5.27880405, exact= 4.48882884, T2'(x2)= 1.28773097
+
+Convergence plot: independent_absolute_sum_convergence.png
+Solution plot: independent_absolute_sum_solution.png
+Distribution plot: independent_absolute_sum_transformed_distribution.png

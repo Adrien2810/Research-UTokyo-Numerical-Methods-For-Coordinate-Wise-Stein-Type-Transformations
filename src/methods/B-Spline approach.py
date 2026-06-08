@@ -1,4 +1,7 @@
 import numpy as np
+import csv
+import os
+import tempfile
 from scipy.optimize import LinearConstraint
 from scipy.linalg import block_diag
 from scipy.interpolate import BSpline
@@ -61,9 +64,20 @@ class BSplineApproach:
     6. Check monotonicity and the stationary condition.
     """
 
-    def __init__(self, problem, config: BSplineConfig | list[BSplineConfig], samples: MonteCarloSamples):
+    def __init__(
+        self,
+        problem,
+        config: BSplineConfig | list[BSplineConfig],
+        samples: MonteCarloSamples,
+        potential_name: str | None = None,
+    ):
         self.problem = problem
         self.samples = samples
+        self.potential_name = (
+            potential_name
+            or getattr(problem, "potential_name", None)
+            or "quadratic_sum"
+        )
         # Allow either one shared spline configuration or one configuration
         # per transform coordinate. (Good for NFL dataset)
         if isinstance(config, BSplineConfig):
@@ -324,6 +338,93 @@ class BSplineApproach:
 
         return blocks
 
+    # Check whether or not the potential is valid or not
+    def _resolve_potential_name(self, potential_name: str | None = None) -> str:
+        """Return the active potential name and validate supported cases."""
+        name = str(potential_name or self.potential_name).strip().lower()
+        if name not in {"quadratic_sum", "absolute_sum"}:
+            raise ValueError(
+                "Unsupported potential. Use `quadratic_sum` or `absolute_sum`."
+            )
+        return name
+
+    # implement the potential for scipy optimization
+    def _potential_term_numpy(self, total_transform, potential_name: str | None = None):
+        """Empirical potential term evaluated on NumPy arrays."""
+        name = self._resolve_potential_name(potential_name)
+        total_transform = np.asarray(total_transform, dtype=float)
+
+        if name == "quadratic_sum":
+            return 0.5 * np.mean(total_transform ** 2)
+
+        return np.mean(np.abs(total_transform))
+
+    # and now for cvxpy optimization
+    def _potential_term_cvxpy(
+        self,
+        total_transform,
+        n_active_samples: int,
+        potential_name: str | None = None,
+    ):
+        """Empirical potential term written with CVXPY atoms."""
+        name = self._resolve_potential_name(potential_name)
+
+        if name == "quadratic_sum":
+            return 0.5 * cp.sum_squares(total_transform) / n_active_samples
+
+        return cp.sum(cp.abs(total_transform)) / n_active_samples
+
+    def _load_scs_history(self, csv_filename: str) -> dict:
+        """
+        Parse the optional SCS CSV log into a lightweight history dict.
+
+        SCS does not expose a SciPy-style callback through CVXPY, but it can
+        write one row per solver iteration to CSV. We convert the most useful
+        columns into the same `result.history` slot used by the evaluation
+        scripts.
+        """
+        history = {
+            "iteration": [],
+            "objective": [],
+            "primal_residual": [],
+            "dual_residual": [],
+            "gap": [],
+            "raw_rows": [],
+        }
+
+        if not os.path.exists(csv_filename):
+            return history
+
+        with open(csv_filename, "r", newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            for row_index, row in enumerate(reader, start=1):
+                history["raw_rows"].append(dict(row))
+                history["iteration"].append(row_index)
+
+                def _read_float(*keys):
+                    for key in keys:
+                        value = row.get(key)
+                        if value not in (None, ""):
+                            try:
+                                return float(value)
+                            except ValueError:
+                                continue
+                    return np.nan
+
+                # SCS typically logs primal objective as `pobj`.
+                history["objective"].append(
+                    _read_float("pobj", "objective", "obj_val")
+                )
+                history["primal_residual"].append(
+                    _read_float("res_pri", "pr", "primal_residual")
+                )
+                history["dual_residual"].append(
+                    _read_float("res_dual", "dr", "dual_residual")
+                )
+                history["gap"].append(_read_float("gap", "duality_gap"))
+
+        return history
+
     # Now we want to implement the basic monte Carlo Objective function given in equation 19
     def MonteCarloObjective(self, flat_coefficients, number_transforms):
         self._validate_active_samples(number_transforms)
@@ -359,7 +460,8 @@ class BSplineApproach:
         safe_derivatives = np.clip(transformed_derivatives, 1e-12, None)
 
         first_term = -np.sum(np.mean(np.log(safe_derivatives), axis=0))
-        second_term = 0.5 * np.mean(np.sum(transformed_points, axis=1) ** 2)
+        total_transform = np.sum(transformed_points, axis=1)
+        second_term = self._potential_term_numpy(total_transform)
 
         return first_term + second_term
         
@@ -492,6 +594,7 @@ class BSplineApproach:
         )
 
         result.history = history 
+        result.potential_name = self._resolve_potential_name()
         return result
 
     def optimize_cvxpy(
@@ -501,6 +604,7 @@ class BSplineApproach:
         minimum_derivative=1e-6,
         solver=None,
         verbose=False,
+        record_history=True,
         **solver_kwargs,
     ):
         """
@@ -578,7 +682,8 @@ class BSplineApproach:
 
         # This is the CVXPY version of the coupling term
         # (1/(2m)) * sum_l (T_1(x_1^l) + ... + T_n(x_n^l))^2.
-        objective += 0.5 * cp.sum_squares(total_transform) / n_active_samples
+        
+        objective += self._potential_term_cvxpy(total_transform, n_active_samples)
 
         problem = cp.Problem(cp.Minimize(objective), constraints)
 
@@ -587,7 +692,35 @@ class BSplineApproach:
             # structure coming from the log term in the objective.
             solver = cp.SCS
 
-        problem.solve(solver=solver, verbose=verbose, warm_start=True, **solver_kwargs)
+        is_scs_solver = str(solver).upper() == str(cp.SCS).upper()
+        history = None
+        temporary_log_file = None
+        log_csv_filename = solver_kwargs.get("log_csv_filename")
+
+        if record_history and is_scs_solver:
+            if log_csv_filename is None:
+                temporary_log_file = tempfile.NamedTemporaryFile(
+                    prefix="scs_history_",
+                    suffix=".csv",
+                    delete=False,
+                )
+                temporary_log_file.close()
+                log_csv_filename = temporary_log_file.name
+                solver_kwargs["log_csv_filename"] = log_csv_filename
+
+        try:
+            problem.solve(
+                solver=solver,
+                verbose=verbose,
+                warm_start=True,
+                **solver_kwargs,
+            )
+
+            if record_history and is_scs_solver and log_csv_filename is not None:
+                history = self._load_scs_history(log_csv_filename)
+        finally:
+            if temporary_log_file is not None and os.path.exists(temporary_log_file.name):
+                os.remove(temporary_log_file.name)
 
         solution_blocks = []
         for variable in coefficient_variables:
@@ -606,9 +739,10 @@ class BSplineApproach:
             status=problem.status,
             message=f"CVXPY status: {problem.status}",
         )
-        result.history = None
+        result.history = history
         result.solver_stats = problem.solver_stats
         result.problem_value = problem.value
+        result.potential_name = self._resolve_potential_name()
 
         return result
 

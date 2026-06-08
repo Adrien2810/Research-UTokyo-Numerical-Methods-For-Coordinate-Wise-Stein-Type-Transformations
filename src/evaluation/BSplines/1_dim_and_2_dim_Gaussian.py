@@ -116,7 +116,23 @@ def extract_history(bspline_approach, result) -> dict:
 
     for candidate in candidates:
         if isinstance(candidate, dict):
-            return candidate
+            coefficients = candidate.get("coefficients", [])
+            if not coefficients:
+                iteration_values = candidate.get("iteration", [])
+                if (
+                    isinstance(iteration_values, list)
+                    and iteration_values
+                    and hasattr(iteration_values[0], "__len__")
+                ):
+                    coefficients = iteration_values
+
+            objective = candidate.get("objective", candidate.get("objective_value", []))
+            return {
+                "coefficients": list(coefficients),
+                "objective": list(objective),
+                "monotonicity_satisfied": list(candidate.get("monotonicity_satisfied", [])),
+                "min_derivatives": list(candidate.get("min_derivatives", [])),
+            }
 
     return {}
 

@@ -39,33 +39,35 @@ toy_module = load_module("toy_independent_module", TOY_FILE)
 bspline_module = load_module("bspline_module", BSPLINE_FILE)
 
 IndependentJointToyProblem = toy_module.IndependentJointToyProblem
+AbsoluteValuePotentialIndependentToyProblem = toy_module.AbsoluteValuePotentialIndependentToyProblem
 ScipyDistribution = toy_module.ScipyDistribution
 STANDARD_NORMAL = toy_module.STANDARD_NORMAL
+STANDARD_LOGISTIC = toy_module.STANDARD_LOGISTIC
 
 BSplineConfig = bspline_module.BSplineConfig
 MonteCarloSamples = bspline_module.MonteCarloSamples
 BSplineApproach = bspline_module.BSplineApproach
 
-# Define our RUn Configurations
+
 @dataclass
 class RunConfigIndependent:
     num_samples: int = 15000
     random_state: int = 7
     number_transforms: int = 2
     optimizer_backend: str = "cvxpy"
+    potential_name: str = "quadratic_sum"
     degree: int = 3
-    domain_1: tuple[float, float] = (-1, 4.0) #go negative to get samples really close to 0 to simulate what happens there at this is highly unstable
-    domain_2: tuple[float, float] = (-1, 12.0)
+    domain_1: tuple[float, float] = (0.0, 3.5)
+    domain_2: tuple[float, float] = (0.0, 10.0)
     num_internal_knots_1: int = 16
     num_internal_knots_2: int = 20
     maxiter: int = 250
     minimum_derivative: float = 1e-5
     grid_size: int = 400
     histogram_bins: int = 45
-    stationary_tolerance: float = 1e-2
+    stationary_tolerance: float = 1e-3
 
-# We left the Gaussian case so this isn't the exact solution anymore, though the knot average, also known as Greville abscissae
-# is a good guess to start
+
 def knot_average(knots: np.ndarray, degree: int) -> np.ndarray:
     """Greville abscissae for a simple monotone initial guess."""
     if degree <= 0:
@@ -92,7 +94,7 @@ def open_uniform_knots(a: float, b: float, degree: int, n_internal: int) -> np.n
     right = np.repeat(b, degree + 1)
     return np.concatenate([left, internal, right])
 
-# Codex suggested this function
+
 def extract_history(bspline_approach, result) -> dict:
     """Normalize the callback history keys coming from the method class."""
     candidates = [
@@ -105,7 +107,18 @@ def extract_history(bspline_approach, result) -> dict:
 
     for candidate in candidates:
         if isinstance(candidate, dict):
-            coefficients = candidate.get("coefficients", candidate.get("iteration", []))
+            coefficients = candidate.get("coefficients", [])
+            if not coefficients:
+                iteration_values = candidate.get("iteration", [])
+                if (
+                    isinstance(iteration_values, list)
+                    and iteration_values
+                    and hasattr(iteration_values[0], "__len__")
+                ):
+                    # SciPy callback history stores coefficient vectors under
+                    # `iteration`, but SCS stores plain iteration numbers there.
+                    coefficients = iteration_values
+
             objective = candidate.get("objective", candidate.get("objective_value", []))
             return {
                 "coefficients": list(coefficients),
@@ -116,35 +129,39 @@ def extract_history(bspline_approach, result) -> dict:
 
     return {}
 
-# In the joint independent case we know that the solution is given by Phi^{-1}(1 - exp(-rate * x))
-def exact_coordinate_map(rate: float, x: np.ndarray) -> np.ndarray:
-    """Exact map T(x) = Phi^{-1}(1 - exp(-rate * x)) for x >= 0."""
-    probabilities = 1.0 - np.exp(-rate * np.asarray(x, dtype=float))
+
+def exact_coordinate_map_with_target(marginal, target_marginal, x: np.ndarray) -> np.ndarray:
+    """Exact map T(x) = G^{-1}(F(x)) for the chosen target marginal G."""
+    probabilities = marginal.cdf(np.asarray(x, dtype=float))
     probabilities = np.clip(probabilities, np.finfo(float).eps, 1.0 - np.finfo(float).eps)
-    return norm.ppf(probabilities)
+    return target_marginal.ppf(probabilities)
 
 
-def exact_coordinate_derivative(rate: float, x: np.ndarray) -> np.ndarray:
-    """Derivative of the exact exponential-to-normal map."""
-    transformed = exact_coordinate_map(rate, x)
-    numerator = rate * np.exp(-rate * np.asarray(x, dtype=float))
-    denominator = norm.pdf(transformed)
+def exact_coordinate_derivative_with_target(marginal, target_marginal, x: np.ndarray) -> np.ndarray:
+    """Derivative of the generic coordinate map G^{-1}(F(x))."""
+    x = np.asarray(x, dtype=float)
+    transformed = exact_coordinate_map_with_target(marginal, target_marginal, x)
+    numerator = marginal.pdf(x)
+    denominator = target_marginal.pdf(transformed)
     return numerator / denominator
 
 
-def exact_map_initial_coefficients(rate: float, knots: np.ndarray, degree: int) -> np.ndarray:
+def exact_map_initial_coefficients(marginal, target_marginal, knots: np.ndarray, degree: int) -> np.ndarray:
     """
-    Build a better monotone initial guess by evaluating the known exact map
-    at the Greville abscissae of the spline basis.
-
-    In this independent case the exact coordinate map is available, so this
-    starts the optimizer much closer to the true solution than the old
-    identity-like coefficient guess.
+    Build a strong monotone warm start by evaluating the known exact map at the
+    Greville abscissae of the spline basis.
     """
     greville_points = knot_average(knots, degree)
-    return exact_coordinate_map(rate, greville_points)
+    return exact_coordinate_map_with_target(marginal, target_marginal, greville_points)
 
-# Use the stationary Stein-Identity check implemeted previously
+
+def diagnostic_points(interval: tuple[float, float], count: int = 5) -> np.ndarray:
+    """Pick readable interior points away from the boundary."""
+    left, right = interval
+    padding = 0.1 * (right - left)
+    return np.linspace(left + padding, right - padding, count, dtype=float)
+
+
 def compute_stationary_residuals(
     bspline_approach,
     flat_coefficients: np.ndarray,
@@ -164,32 +181,67 @@ def compute_stationary_residuals(
     )
 
 
-def run_independent_quadratic(config: RunConfigIndependent):
+def build_problem_and_target(config: RunConfigIndependent, marginal_1, marginal_2):
+    """Choose the toy problem class and the corresponding exact target marginal."""
+    if config.potential_name == "quadratic_sum":
+        problem = IndependentJointToyProblem(
+            marginals=(marginal_1, marginal_2),
+            target_marginal=STANDARD_NORMAL,
+            name="independent_quadratic_exponential",
+            potential_name="quadratic_sum",
+            description=(
+                "Independent exponential marginals with rates 2 and 0.5 under the "
+                "quadratic potential. Exact coordinate-wise map is Phi^{-1}(F_i)."
+            ),
+        )
+        target_marginal = STANDARD_NORMAL
+        exact_map_label = "Phi^{-1}(F_i)"
+    elif config.potential_name == "absolute_sum":
+        problem = AbsoluteValuePotentialIndependentToyProblem(
+            marginals=(marginal_1, marginal_2),
+        )
+        target_marginal = STANDARD_LOGISTIC
+        exact_map_label = "G^{-1}(F_i)"
+    else:
+        raise ValueError(
+            "Unsupported potential for this evaluator. "
+            "Use `quadratic_sum` or `absolute_sum`."
+        )
+
+    return problem, target_marginal, exact_map_label
+
+
+def potential_derivative_function(potential_name: str):
+    """
+    Return the one-dimensional derivative/subgradient of psi(s) where the
+    potential has the form V(y) = psi(y_1 + ... + y_n).
+    """
+    if potential_name == "quadratic_sum":
+        return lambda s: s
+    if potential_name == "absolute_sum":
+        # We use np.sign as the natural subgradient away from zero.
+        return lambda s: np.sign(s)
+    raise ValueError("Unsupported potential. Use `quadratic_sum` or `absolute_sum`.")
+
+
+def run_independent_case(config: RunConfigIndependent):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Build the two exponential marginals: rate 2 and rate 0.5.
     marginal_1 = ScipyDistribution("exponential_rate_2", expon(scale=0.5))
     marginal_2 = ScipyDistribution("exponential_rate_0.5", expon(scale=2.0))
-
-    problem = IndependentJointToyProblem(
-        marginals=(marginal_1, marginal_2),
-        target_marginal=STANDARD_NORMAL,
-        name="independent_quadratic_exponential",
-        potential_name="quadratic_sum",
-        description=(
-            "Independent exponential marginals with rates 2 and 0.5 under the "
-            "quadratic potential. Exact coordinate-wise map is Phi^{-1}(F_i)."
-        ),
+    problem, target_marginal, exact_map_label = build_problem_and_target(
+        config,
+        marginal_1,
+        marginal_2,
     )
 
     raw_points = problem.sample(config.num_samples, random_state=config.random_state)
 
-    # Keep only samples inside the spline rectangle.
     in_domain_mask = (
-        (raw_points[:, 0] >= config.domain_1[0]) &
-        (raw_points[:, 0] <= config.domain_1[1]) &
-        (raw_points[:, 1] >= config.domain_2[0]) &
-        (raw_points[:, 1] <= config.domain_2[1])
+        (raw_points[:, 0] >= config.domain_1[0])
+        & (raw_points[:, 0] <= config.domain_1[1])
+        & (raw_points[:, 1] >= config.domain_2[0])
+        & (raw_points[:, 1] <= config.domain_2[1])
     )
     filtered_points = raw_points[in_domain_mask]
 
@@ -198,7 +250,6 @@ def run_independent_quadratic(config: RunConfigIndependent):
 
     samples = MonteCarloSamples(points=filtered_points)
 
-    # Build one spline configuration per coordinate.
     knots_1 = open_uniform_knots(
         a=config.domain_1[0],
         b=config.domain_1[1],
@@ -227,17 +278,21 @@ def run_independent_quadratic(config: RunConfigIndependent):
         problem=problem,
         config=[bspline_config_1, bspline_config_2],
         samples=samples,
+        potential_name=config.potential_name,
     )
 
-    # Since the independent case has a closed-form coordinate map, we use it
-    # to build a much better monotone initial guess than the old identity-like
-    # Greville average initialization.
-    # initial_coefficients_1 = exact_map_initial_coefficients(2.0, knots_1, config.degree) # start with exact solution to debug
-    # initial_coefficients_2 = exact_map_initial_coefficients(0.5, knots_2, config.degree)
-    # initial_guess = np.concatenate([initial_coefficients_1, initial_coefficients_2])
-
-    initial_coefficients_1 = knot_average(knots_1, config.degree) # start with exact solution to debug
-    initial_coefficients_2 = knot_average(knots_2, config.degree)
+    initial_coefficients_1 = exact_map_initial_coefficients(
+        marginal_1,
+        target_marginal,
+        knots_1,
+        config.degree,
+    )
+    initial_coefficients_2 = exact_map_initial_coefficients(
+        marginal_2,
+        target_marginal,
+        knots_2,
+        config.degree,
+    )
     initial_guess = np.concatenate([initial_coefficients_1, initial_coefficients_2])
 
     start_time = perf_counter()
@@ -261,18 +316,25 @@ def run_independent_quadratic(config: RunConfigIndependent):
     grid_1 = np.linspace(sample_min_1, sample_max_1, config.grid_size)
     grid_2 = np.linspace(sample_min_2, sample_max_2, config.grid_size)
 
-    exact_solution_1 = exact_coordinate_map(2.0, grid_1)
-    exact_solution_2 = exact_coordinate_map(0.5, grid_2)
-    exact_derivative_1 = exact_coordinate_derivative(2.0, grid_1)
-    exact_derivative_2 = exact_coordinate_derivative(0.5, grid_2)
+    exact_solution_1 = exact_coordinate_map_with_target(marginal_1, target_marginal, grid_1)
+    exact_solution_2 = exact_coordinate_map_with_target(marginal_2, target_marginal, grid_2)
+    exact_derivative_1 = exact_coordinate_derivative_with_target(marginal_1, target_marginal, grid_1)
+    exact_derivative_2 = exact_coordinate_derivative_with_target(marginal_2, target_marginal, grid_2)
 
     coeff_blocks = bspline_approach._split_coefficients(result.x, config.number_transforms)
 
     fitted_grid_1 = bspline_approach.transform(grid_1, coeff_blocks[0], transform_index=0)
     fitted_grid_2 = bspline_approach.transform(grid_2, coeff_blocks[1], transform_index=1)
-
-    fitted_derivative_grid_1 = bspline_approach.transform_derivative(grid_1, coeff_blocks[0], transform_index=0)
-    fitted_derivative_grid_2 = bspline_approach.transform_derivative(grid_2, coeff_blocks[1], transform_index=1)
+    fitted_derivative_grid_1 = bspline_approach.transform_derivative(
+        grid_1,
+        coeff_blocks[0],
+        transform_index=0,
+    )
+    fitted_derivative_grid_2 = bspline_approach.transform_derivative(
+        grid_2,
+        coeff_blocks[1],
+        transform_index=1,
+    )
 
     initial_grid_1 = bspline_approach.transform(grid_1, initial_coefficients_1, transform_index=0)
     initial_grid_2 = bspline_approach.transform(grid_2, initial_coefficients_2, transform_index=1)
@@ -281,7 +343,6 @@ def run_independent_quadratic(config: RunConfigIndependent):
     l2_error_2 = float(np.sqrt(np.mean((fitted_grid_2 - exact_solution_2) ** 2)))
     linf_error_1 = float(np.max(np.abs(fitted_grid_1 - exact_solution_1)))
     linf_error_2 = float(np.max(np.abs(fitted_grid_2 - exact_solution_2)))
-
     derivative_linf_error_1 = float(np.max(np.abs(fitted_derivative_grid_1 - exact_derivative_1)))
     derivative_linf_error_2 = float(np.max(np.abs(fitted_derivative_grid_2 - exact_derivative_2)))
 
@@ -300,7 +361,6 @@ def run_independent_quadratic(config: RunConfigIndependent):
 
     objective_iterations = np.arange(1, len(objective_history) + 1)
 
-    # Compute iterate-based error histories after optimization.
     l2_history = []
     linf_history = []
     for coeffs in coefficient_history:
@@ -327,12 +387,12 @@ def run_independent_quadratic(config: RunConfigIndependent):
     l2_log = np.maximum(l2_history, log_floor)
     linf_log = np.maximum(linf_history, log_floor)
 
-    convergence_plot_path = OUTPUT_DIR / "independent_quadratic_convergence.png"
-    solution_plot_path = OUTPUT_DIR / "independent_quadratic_solution.png"
-    distribution_plot_path = OUTPUT_DIR / "independent_quadratic_transformed_distribution.png"
-    summary_path = OUTPUT_DIR / "independent_quadratic_summary.txt"
+    output_stem = f"independent_{config.potential_name}"
+    convergence_plot_path = OUTPUT_DIR / f"{output_stem}_convergence.png"
+    solution_plot_path = OUTPUT_DIR / f"{output_stem}_solution.png"
+    distribution_plot_path = OUTPUT_DIR / f"{output_stem}_transformed_distribution.png"
+    summary_path = OUTPUT_DIR / f"{output_stem}_summary.txt"
 
-    # Convergence plots.
     fig, axes = plt.subplots(2, 2, figsize=(11, 8.5))
 
     axes[0, 0].plot(
@@ -420,7 +480,6 @@ def run_independent_quadratic(config: RunConfigIndependent):
     fig.savefig(convergence_plot_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
-    # Coordinate-wise solution and derivative plots.
     fig, axes = plt.subplots(2, 2, figsize=(11, 8.5))
 
     axes[0, 0].plot(grid_1, exact_solution_1, label="Exact map", color="black", linestyle="--", linewidth=2)
@@ -461,30 +520,16 @@ def run_independent_quadratic(config: RunConfigIndependent):
     fig.savefig(solution_plot_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
 
-    # Scatter before and after transformation.
-        # Compare input samples, optimized transformed samples, and exact transformed samples.
-    transformed_1 = bspline_approach.transform(
-        sample_values_1,
-        coeff_blocks[0],
-        transform_index=0,
-    )
-    transformed_2 = bspline_approach.transform(
-        sample_values_2,
-        coeff_blocks[1],
-        transform_index=1,
-    )
+    transformed_1 = bspline_approach.transform(sample_values_1, coeff_blocks[0], transform_index=0)
+    transformed_2 = bspline_approach.transform(sample_values_2, coeff_blocks[1], transform_index=1)
 
     exact_transformed = np.asarray(
         problem.exact_transformation(filtered_points),
         dtype=float,
     )
 
-    all_x = np.concatenate(
-        [sample_values_1, transformed_1, exact_transformed[:, 0]]
-    )
-    all_y = np.concatenate(
-        [sample_values_2, transformed_2, exact_transformed[:, 1]]
-    )
+    all_x = np.concatenate([sample_values_1, transformed_1, exact_transformed[:, 0]])
+    all_y = np.concatenate([sample_values_2, transformed_2, exact_transformed[:, 1]])
 
     x_pad = 0.05 * (np.max(all_x) - np.min(all_x))
     y_pad = 0.05 * (np.max(all_y) - np.min(all_y))
@@ -493,13 +538,7 @@ def run_independent_quadratic(config: RunConfigIndependent):
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.8))
 
-    axes[0].scatter(
-        sample_values_1,
-        sample_values_2,
-        s=10,
-        alpha=0.35,
-        color="#6c757d",
-    )
+    axes[0].scatter(sample_values_1, sample_values_2, s=10, alpha=0.35, color="#6c757d")
     axes[0].set_title("Input Independent Samples")
     axes[0].set_xlabel("x1")
     axes[0].set_ylabel("x2")
@@ -508,13 +547,7 @@ def run_independent_quadratic(config: RunConfigIndependent):
     axes[0].grid(alpha=0.2)
     axes[0].set_aspect("equal", adjustable="box")
 
-    axes[1].scatter(
-        transformed_1,
-        transformed_2,
-        s=10,
-        alpha=0.35,
-        color="#0a9396",
-    )
+    axes[1].scatter(transformed_1, transformed_2, s=10, alpha=0.35, color="#0a9396")
     axes[1].set_title("Optimized Transformed Samples")
     axes[1].set_xlabel("T1(x1)")
     axes[1].set_ylabel("T2(x2)")
@@ -523,13 +556,7 @@ def run_independent_quadratic(config: RunConfigIndependent):
     axes[1].grid(alpha=0.2)
     axes[1].set_aspect("equal", adjustable="box")
 
-    axes[2].scatter(
-        exact_transformed[:, 0],
-        exact_transformed[:, 1],
-        s=10,
-        alpha=0.35,
-        color="#9c6644",
-    )
+    axes[2].scatter(exact_transformed[:, 0], exact_transformed[:, 1], s=10, alpha=0.35, color="#9c6644")
     axes[2].set_title("Exact Transformed Samples")
     axes[2].set_xlabel("T1*(x1)")
     axes[2].set_ylabel("T2*(x2)")
@@ -541,8 +568,8 @@ def run_independent_quadratic(config: RunConfigIndependent):
     fig.tight_layout()
     fig.savefig(distribution_plot_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
-    # Stationary-condition checks for a few test functions.
-    potential_derivative = lambda s: s
+
+    potential_derivative = potential_derivative_function(config.potential_name)
     stationary_tests = [
         ("x", lambda y: y, lambda y: np.ones_like(y)),
         ("x^2", lambda y: y ** 2, lambda y: 2.0 * y),
@@ -563,23 +590,30 @@ def run_independent_quadratic(config: RunConfigIndependent):
         passed = bool(np.all(np.abs(residuals) <= config.stationary_tolerance))
         stationary_results.append((name, residuals, passed))
 
-    sample_points_1 = np.array([0.25, 0.5, 1.0, 1.5, 2.0], dtype=float)
-    sample_points_2 = np.array([0.5, 1.0, 2.0, 4.0, 6.0], dtype=float)
+    sample_points_1 = diagnostic_points(config.domain_1)
+    sample_points_2 = diagnostic_points(config.domain_2)
 
     sample_solution_values_1 = bspline_approach.transform(sample_points_1, coeff_blocks[0], transform_index=0)
     sample_solution_values_2 = bspline_approach.transform(sample_points_2, coeff_blocks[1], transform_index=1)
-    sample_solution_derivatives_1 = bspline_approach.transform_derivative(sample_points_1, coeff_blocks[0], transform_index=0)
-    sample_solution_derivatives_2 = bspline_approach.transform_derivative(sample_points_2, coeff_blocks[1], transform_index=1)
+    sample_solution_derivatives_1 = bspline_approach.transform_derivative(
+        sample_points_1,
+        coeff_blocks[0],
+        transform_index=0,
+    )
+    sample_solution_derivatives_2 = bspline_approach.transform_derivative(
+        sample_points_2,
+        coeff_blocks[1],
+        transform_index=1,
+    )
 
-    exact_sample_values_1 = exact_coordinate_map(2.0, sample_points_1)
-    exact_sample_values_2 = exact_coordinate_map(0.5, sample_points_2)
+    exact_sample_values_1 = exact_coordinate_map_with_target(marginal_1, target_marginal, sample_points_1)
+    exact_sample_values_2 = exact_coordinate_map_with_target(marginal_2, target_marginal, sample_points_2)
 
     summary_lines = [
-        "Independent quadratic exponential B-spline evaluation",
+        "Independent exponential B-spline evaluation",
         "",
-        "Exact transformations:",
-        "  T1(x) = Phi^{-1}(1 - exp(-2 x))",
-        "  T2(x) = Phi^{-1}(1 - exp(-0.5 x))",
+        f"Potential: {config.potential_name}",
+        f"Exact coordinate map: {exact_map_label}",
         "",
         f"Runtime (seconds): {runtime_seconds:.6f}",
         f"Optimizer backend: {config.optimizer_backend}",
@@ -630,7 +664,7 @@ def run_independent_quadratic(config: RunConfigIndependent):
         sample_solution_derivatives_1,
     ):
         summary_lines.append(
-            f"  x1={x_value:5.2f} -> T1(x1)={t_value: .8f}, exact={t_exact: .8f}, T1'(x1)={dt_value: .8f}"
+            f"  x1={x_value: .4f} -> T1(x1)={t_value: .8f}, exact={t_exact: .8f}, T1'(x1)={dt_value: .8f}"
         )
 
     summary_lines.append("")
@@ -642,7 +676,7 @@ def run_independent_quadratic(config: RunConfigIndependent):
         sample_solution_derivatives_2,
     ):
         summary_lines.append(
-            f"  x2={x_value:5.2f} -> T2(x2)={t_value: .8f}, exact={t_exact: .8f}, T2'(x2)={dt_value: .8f}"
+            f"  x2={x_value: .4f} -> T2(x2)={t_value: .8f}, exact={t_exact: .8f}, T2'(x2)={dt_value: .8f}"
         )
 
     summary_lines.extend(
@@ -667,6 +701,11 @@ def run_independent_quadratic(config: RunConfigIndependent):
     }
 
 
+def run_independent_quadratic(config: RunConfigIndependent):
+    """Backward-compatible entry point."""
+    return run_independent_case(config)
+
+
 if __name__ == "__main__":
     config = RunConfigIndependent()
-    run_independent_quadratic(config)
+    run_independent_case(config)

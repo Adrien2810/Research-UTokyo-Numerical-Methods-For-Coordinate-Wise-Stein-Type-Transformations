@@ -1,37 +1,40 @@
 Gaussian 2D B-spline evaluation
 
-Runtime (seconds): 108.143277
+Runtime (seconds): 106.495688
+Optimizer backend: cvxpy
 Optimizer success: True
-Optimizer status: 0
-Optimizer message: Optimization terminated successfully
-Objective evaluations recorded: 99
+Optimizer status: optimal
+Optimizer message: CVXPY status: optimal
+Minimum derivative lower bound: 1.00e-05
+Objective evaluations recorded: 1
 Accepted iterates recorded: 1
-Number of in-domain Monte Carlo samples: 10000
+Number of in-domain Monte Carlo samples: 30000
 Covariance matrix:
 [[0.7 0.3]
  [0.3 0.7]]
 Domain x1: (-5.0, 5.0)
 Domain x2: (-5.0, 5.0)
-Sample interval x1: [-3.190068, 3.211894]
-Sample interval x2: [-2.994733, 2.989613]
+Sample interval x1: [-3.423455, 3.265788]
+Sample interval x2: [-3.118097, 3.803824]
 Spline degree: 3
 Number of basis functions T1: 14
 Number of basis functions T2: 14
-Final empirical objective: 0.9973209008
-L2 error T1 on sample interval: 2.6093626713e-01
-L2 error T2 on sample interval: 2.3514321023e-01
-Linf error T1 on sample interval: 9.4725315859e-01
-Linf error T2 on sample interval: 3.0997394355e-01
-Linf derivative error T1: 2.4878193226e+00
-Linf derivative error T2: 7.3620545305e-01
+Final empirical objective: 1.0032542274
+L2 error T1 on sample interval: 5.2722362497e+00
+L2 error T2 on sample interval: 5.2171209651e+00
+Linf error T1 on sample interval: 5.3980786385e+00
+Linf error T2 on sample interval: 5.2883870356e+00
+Linf derivative error T1: 2.4262320304e+01
+Linf derivative error T2: 1.0913501139e+00
 
 Optimized B-spline coefficients:
-[-13.59724284, -13.22137737,  -8.25073755,  -3.60942371,  -1.96359717,
-  -1.15349263,  -0.19547521,   0.67956617,   1.6184702 ,   2.43651346,
-   3.50316755,   3.50326755,   7.41793294,   9.82960261, -11.22256292,
- -11.07218313,  -3.49441094,  -2.61632617,  -2.60427965,  -1.63133206,
-  -0.70434843,   0.19683606,   1.13759132,   1.94782373,   3.30125518,
-   4.77837977,   6.79254808,   9.31754434]
+[-7.46734355e+02, -3.97271346e+01, -8.92063431e+00, -8.67646768e+00,
+ -7.46663646e+00, -6.61563666e+00, -5.70745488e+00, -4.80669242e+00,
+ -3.86935509e+00, -3.04263273e+00, -2.13839004e+00, -1.30809690e+00,
+  3.45385959e+03,  3.47045807e+03, -2.30301188e+00, -2.08257997e+00,
+ -1.16374802e+00,  2.02776121e+00,  2.94608734e+00,  3.88877953e+00,
+  4.79837250e+00,  5.70010975e+00,  6.61119584e+00,  7.51279723e+00,
+  8.55574380e+00,  8.55261716e+00,  1.05083584e+01,  1.89379897e+01]
 
 Reference identity coefficients (Greville abscissae):
 [-5.        , -4.6969697 , -4.09090909, -3.18181818, -2.27272727,
@@ -42,18 +45,18 @@ Reference identity coefficients (Greville abscissae):
   4.09090909,  4.6969697 ,  5.        ]
 
 Solution values at sample points for T1:
-  x1=-2.00 -> T1(x1)=-1.76767564, T1'(x1)= 1.12366376
-  x1=-1.00 -> T1(x1)=-0.76584588, T1'(x1)= 1.01723052
-  x1= 0.00 -> T1(x1)= 0.24164728, T1'(x1)= 0.98273584
-  x1= 1.00 -> T1(x1)= 1.23923880, T1'(x1)= 1.00324408
-  x1= 2.00 -> T1(x1)= 2.20476886, T1'(x1)= 0.97283081
+  x1=-2.00 -> T1(x1)=-7.23159240, T1'(x1)= 1.03563536
+  x1=-1.00 -> T1(x1)=-6.25038453, T1'(x1)= 0.98702503
+  x1= 0.00 -> T1(x1)=-5.25646624, T1'(x1)= 0.99688791
+  x1= 1.00 -> T1(x1)=-4.24788202, T1'(x1)= 1.00595071
+  x1= 2.00 -> T1(x1)=-3.28671563, T1'(x1)= 0.93576176
 
 Solution values at sample points for T2:
-  x2=-2.00 -> T2(x2)=-2.25767070, T2'(x2)= 0.80900430
-  x2=-1.00 -> T2(x2)=-1.26246850, T2'(x2)= 1.02651253
-  x2= 0.00 -> T2(x2)=-0.25346927, T2'(x2)= 1.00029131
-  x2= 1.00 -> T2(x2)= 0.75701248, T2'(x2)= 1.00550503
-  x2= 2.00 -> T2(x2)= 1.73521953, T2'(x2)= 1.04410868
+  x2=-2.00 -> T2(x2)= 3.23013898, T2'(x2)= 1.02875635
+  x2=-1.00 -> T2(x2)= 4.25134135, T2'(x2)= 1.00641461
+  x2= 0.00 -> T2(x2)= 5.24927223, T2'(x2)= 0.99427660
+  x2= 1.00 -> T2(x2)= 6.24651967, T2'(x2)= 0.99949403
+  x2= 2.00 -> T2(x2)= 7.25035436, T2'(x2)= 1.03032355
 
 Convergence plot: gaussian_2d_convergence.png
 Solution plot: gaussian_2d_solution.png
